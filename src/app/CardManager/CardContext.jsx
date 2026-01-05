@@ -47,6 +47,45 @@ const cardReducer = (state, action) => {
             }
             return next;
         }
+        case 'UPDATE_CARD': {
+            const { id, updates } = action.payload;
+            const next = ensureBucketedCopy(state);
+
+            // Find and remove the old card
+            let oldCard = null;
+            for (const bucket of Object.values(next)) {
+                const index = bucket.findIndex(c => c.id === id);
+                if (index !== -1) {
+                    oldCard = bucket[index];
+                    bucket.splice(index, 1);
+                    break;
+                }
+            }
+
+            if (!oldCard) return state;
+
+            // Create updated card and add to appropriate bucket
+            const updatedCard = { ...oldCard, ...updates };
+            const newBucket = updatedCard.cost ?? 'X';
+            if (!next[newBucket]) next[newBucket] = [];
+            next[newBucket] = [...next[newBucket], updatedCard];
+
+            return next;
+        }
+        case 'DELETE_CARD': {
+            const id = action.payload;
+            const next = ensureBucketedCopy(state);
+
+            for (const bucket of Object.values(next)) {
+                const index = bucket.findIndex(c => c.id === id);
+                if (index !== -1) {
+                    bucket.splice(index, 1);
+                    break;
+                }
+            }
+
+            return next;
+        }
         case 'RESET': {
             return ensureBucketedCopy(action.payload || INITIAL_CARDS);
         }
@@ -97,6 +136,8 @@ export const useCards = () => {
 export const cardActions = {
     addCard: (card) => ({ type: 'ADD_CARD', payload: card }),
     addCards: (cards) => ({ type: 'ADD_CARDS', payload: cards }),
+    updateCard: (id, updates) => ({ type: 'UPDATE_CARD', payload: { id, updates } }),
+    deleteCard: (id) => ({ type: 'DELETE_CARD', payload: id }),
     reset: (payload) => ({ type: 'RESET', payload })
 };
 

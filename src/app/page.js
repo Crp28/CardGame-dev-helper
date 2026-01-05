@@ -1,5 +1,10 @@
+'use client';
+
 import React from 'react';
-import CardManager from './CardManager/page';
+import dynamic from 'next/dynamic';
+
+// Dynamically import CardManager with SSR disabled to avoid IndexedDB SSR issues
+const CardManager = dynamic(() => import('./CardManager/page'), { ssr: false });
 
 function App() {
   return (

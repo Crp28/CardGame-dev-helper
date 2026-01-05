@@ -1,11 +1,14 @@
 
 'use client'
 
-import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import gsap from 'gsap';
 import { Flip } from 'gsap/Flip';
-import { createCard, createCardsFromJsonString } from '@/lib/server/cardio';
-import { CardProvider, cardActions, useCards } from './CardContext';
+import { createCard, createCardsFromJsonString, updateCard, deleteCard as deleteCardFromDb, exportCardsToJsonString, importCardsFromJsonString } from '@/lib/server/cardio';
+import { CardProvider, cardActions, useCards, bucketCards } from './CardContext';
+
+// Force dynamic rendering to avoid SSR issues with IndexedDB
+export const dynamic = 'force-dynamic';
 
 const formatAffiliation = (affiliation = []) => affiliation.join(' ');
 
@@ -13,16 +16,27 @@ const BarGraph = ({ data }) => {
     const { cards } = useCards();
     const [selectedCost, setSelectedCost] = useState(null);
     const graphData = data ?? cards;
+
+    // Convert flat array to bucketed format if needed
+    const bucketedData = useMemo(() => {
+        if (Array.isArray(graphData)) {
+            // It's a flat array from filtering - bucket it
+            return bucketCards(graphData);
+        }
+        // It's already in bucketed format
+        return graphData;
+    }, [graphData]);
+
     const sanitizedGraphData = useMemo(() => {
-        if (!graphData || typeof graphData !== 'object') return {};
-        return Object.entries(graphData).reduce((acc, [key, value]) => {
+        if (!bucketedData || typeof bucketedData !== 'object') return {};
+        return Object.entries(bucketedData).reduce((acc, [key, value]) => {
             if (key === '' || key == null) return acc;
             const bucket = (value || []).filter(card => card?.type !== 'Leader');
             if (!bucket.length) return acc;
             acc[key] = bucket;
             return acc;
         }, {});
-    }, [graphData]);
+    }, [bucketedData]);
     const costs = ['X', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '10+'];
 
     const barRefs = useRef({});
@@ -616,13 +630,35 @@ const CardController = () => {
 //     );
 // }
 
-const CardList = ({ onSelect, selectedId }) => {
-    const { cards } = useCards();
+const CardList = ({ onSelect, selectedId, filteredCards, sortBy, sortOrder }) => {
+    const allCards = useMemo(() => {
+        let result = filteredCards || [];
 
-    const allCards = useMemo(() => Object.values(cards).flat(), [cards]);
+        // Sort
+        if (sortBy === 'id') {
+            result = [...result].sort((a, b) => {
+                return sortOrder === 'asc' ? (a.id - b.id) : (b.id - a.id);
+            });
+        } else if (sortBy === 'type') {
+            result = [...result].sort((a, b) => {
+                const cmp = a.type.localeCompare(b.type);
+                return sortOrder === 'asc' ? cmp : -cmp;
+            });
+        } else if (sortBy === 'cost') {
+            const costOrder = ['X', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '10+', ''];
+            result = [...result].sort((a, b) => {
+                const aIndex = costOrder.indexOf(a.cost ?? '');
+                const bIndex = costOrder.indexOf(b.cost ?? '');
+                const cmp = aIndex - bIndex;
+                return sortOrder === 'asc' ? cmp : -cmp;
+            });
+        }
+
+        return result;
+    }, [filteredCards, sortBy, sortOrder]);
 
     if (!allCards.length) {
-        return <p className="font-mono text-sm text-gray-400">No cards yet</p>;
+        return <p className="font-mono text-sm text-gray-400">No cards match</p>;
     }
 
     return (
@@ -674,51 +710,500 @@ const CardList = ({ onSelect, selectedId }) => {
     );
 };
 
-const CardShow = (selectedCard) => {
-    return (
-        <div className="w-full flex flex-col gap-2 text-gray-800">
-            <div className="flex items-center gap-3">
-                <span className="text-blue-500 font-mono text-sm min-w-6">{selectedCard.type === 'Leader' ? '⭐' : selectedCard.cost}</span>
-                <div className="flex flex-col">
-                    <span className="font-mono text-lg font-semibold">{selectedCard.name}</span>
-                    <span className="font-mono text-xs text-gray-500">{selectedCard.type}</span>
-                    {selectedCard.affiliation?.length ? (
-                        <span className="font-mono text-xs text-gray-500">{formatAffiliation(selectedCard.affiliation)}</span>
-                    ) : null}
-                </div>
+const CardShow = ({ id, name, type, cost, affiliation, description, attack, life, phyRes, magRes, onUpdate, onDelete }) => {
+    const [editMode, setEditMode] = useState(null); // field name being edited
+    const [editValue, setEditValue] = useState('');
+
+    const handleDoubleClick = (field, currentValue) => {
+        setEditMode(field);
+        setEditValue(Array.isArray(currentValue) ? currentValue.join(' ') : String(currentValue || ''));
+    };
+
+    const handleSave = async () => {
+        if (!editMode) return;
+
+        try {
+            let valueToSave = editValue;
+            // If editing affiliation, split into array
+            if (editMode === 'affiliation') {
+                valueToSave = editValue.split(' ').filter(s => s.trim());
+            }
+            const updates = { [editMode]: valueToSave };
+            await onUpdate(id, updates);
+            setEditMode(null);
+            setEditValue('');
+        } catch (error) {
+            console.error('Failed to update card', error);
+            alert('Failed to update card');
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') {
+            handleSave();
+        } else if (e.key === 'Escape') {
+            setEditMode(null);
+            setEditValue('');
+        }
+    };
+
+    const handleDelete = async () => {
+        if (!window.confirm(`Delete card "${name}"?`)) return;
+
+        try {
+            await onDelete(id);
+        } catch (error) {
+            console.error('Failed to delete card', error);
+            alert('Failed to delete card');
+        }
+    };
+
+    const renderEditableField = (field, value, label) => {
+        const isEditing = editMode === field;
+        const displayValue = Array.isArray(value) ? value.join(' ') : String(value || '');
+
+        return (
+            <div className="flex items-center gap-2">
+                {field !== "affiliation" ? <span className="font-semibold">{label}:</span> : null}
+                {isEditing ? (
+                    <input
+                        type="text"
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={handleSave}
+                        onKeyDown={handleKeyDown}
+                        autoFocus
+                        className="flex-1 border-2 border-red-300 rounded px-2 py-1 text-sm font-mono focus:outline-none"
+                    />
+                ) : (
+                    <span
+                        onDoubleClick={() => handleDoubleClick(field, value)}
+                        className={field === "affiliation" ? "cursor-pointer hover:bg-gray-100 rounded ml-2 text-[12px] font-mono text-gray-700" : "flex-1 cursor-pointer hover:bg-gray-100 rounded px-2 py-1"}
+                        title="Double-click to edit"
+                    >
+                        {displayValue || <span className="text-gray-400 italic">-</span>}
+                    </span>
+                )}
             </div>
-            {selectedCard.description ? (
-                <pre className="font-mono text-sm text-gray-700 leading-snug text-wrap">{selectedCard.description}</pre>
-            ) : null}
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono text-gray-600">
-                {'attack' in selectedCard ? <div>ATK: {selectedCard.attack}</div> : null}
-                {'life' in selectedCard ? <div>LIFE: {selectedCard.life}</div> : null}
-                {'phyRes' in selectedCard ? <div>PHY RES: {selectedCard.phyRes}</div> : null}
-                {'magRes' in selectedCard ? <div>MAG RES: {selectedCard.magRes}</div> : null}
+        );
+    };
+
+    return (
+        <div className="w-full flex flex-col gap-3 text-gray-800">
+            {/* Header with cost/type badge */}
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                    <span className="text-blue-500 font-mono text-2xl min-w-6">
+                        {type === 'Leader' ? '⭐' : cost}
+                    </span>
+                    <div className="flex flex-col">
+                        {editMode === 'name' ? (
+                            <input
+                                type="text"
+                                value={editValue}
+                                onChange={(e) => setEditValue(e.target.value)}
+                                onBlur={handleSave}
+                                onKeyDown={handleKeyDown}
+                                autoFocus
+                                className="border-2 border-red-300 rounded px-2 py-1 text-lg font-mono font-semibold focus:outline-none"
+                            />
+                        ) : (
+                            <span
+                                className="font-mono text-lg font-semibold cursor-pointer hover:bg-gray-100 rounded px-2 py-1"
+                                onDoubleClick={() => handleDoubleClick('name', name)}
+                                title="Double-click to edit"
+                            >
+                                {name || <span className="text-gray-400 italic">Untitled</span>}
+                            </span>
+                        )}
+                        <span className="font-mono text-xs text-gray-500 px-2">{type}</span>
+                        {/* Affiliation */}
+                        {(affiliation?.length > 0 || editMode === 'affiliation') && (
+                            <div className="text-sm">
+                                {renderEditableField('affiliation', affiliation, 'Affiliation')}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <button
+                    onClick={handleDelete}
+                    className="text-red-500 hover:bg-red-50 p-2 rounded transition-colors hover:cursor-pointer"
+                    title="Delete this card"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                </button>
+
+            </div>
+
+
+
+            {/* Description */}
+            {(description || editMode === 'description') && (
+                <div className="text-sm">
+                    {editMode === 'description' ? (
+                        <textarea
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={handleSave}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                    setEditMode(null);
+                                    setEditValue('');
+                                }
+                            }}
+                            autoFocus
+                            rows={4}
+                            className="w-full border-2 border-red-300 rounded px-2 py-1 text-sm font-mono focus:outline-none resize-none"
+                        />
+                    ) : (
+                        <pre
+                            className="font-mono text-sm text-gray-700 leading-snug text-wrap cursor-pointer hover:bg-gray-100 rounded px-2 py-1"
+                            onDoubleClick={() => handleDoubleClick('description', description)}
+                            title="Double-click to edit"
+                        >
+                            {description}
+                        </pre>
+                    )}
+                </div>
+            )}
+
+            {/* Stats grid */}
+            <div className="grid grid-cols-2 gap-2 text-sm font-mono text-gray-600 mt-2">
+                {attack != null && renderEditableField('attack', attack, 'ATK')}
+                {life != null && renderEditableField('life', life, 'LIFE')}
+                {phyRes != null && renderEditableField('phyRes', phyRes, 'PHY RES')}
+                {magRes != null && renderEditableField('magRes', magRes, 'MAG RES')}
             </div>
         </div>
-    )
-}
+    );
+};
+
+const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
+    const [showFilters, setShowFilters] = useState(false);
+    const [filterTypes, setFilterTypes] = useState([]);
+    const [filterCosts, setFilterCosts] = useState([]);
+    const [searchText, setSearchText] = useState('');
+    const [sortBy, setSortBy] = useState('cost');
+    const [sortOrder, setSortOrder] = useState('asc');
+
+    const cardTypes = ['Follower', 'Leader', 'Legend', 'Castable', 'Environment', 'Equipment', 'Enchantment'];
+    const costs = ['X', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '10+'];
+
+    useEffect(() => {
+        onFilterChange({ types: filterTypes, costs: filterCosts, searchText });
+    }, [filterTypes, filterCosts, searchText, onFilterChange]);
+
+    useEffect(() => {
+        onSortChange({ sortBy, sortOrder });
+    }, [sortBy, sortOrder, onSortChange]);
+
+    const toggleType = (type) => {
+        setFilterTypes(prev =>
+            prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
+        );
+    };
+
+    const toggleCost = (cost) => {
+        setFilterCosts(prev =>
+            prev.includes(cost) ? prev.filter(c => c !== cost) : [...prev, cost]
+        );
+    };
+
+    const toggleSort = () => {
+        setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+    };
+
+    const handleExportClick = async () => {
+        try {
+            const jsonString = await onExport();
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `cards-export-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Export failed', error);
+            alert('Export failed');
+        }
+    };
+
+    const handleImportClick = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+
+            try {
+                const text = await file.text();
+                const replace = window.confirm('Replace existing cards? (Cancel to append)');
+                await onImport(text, { replace });
+                alert(`Import successful!`);
+            } catch (error) {
+                console.error('Import failed', error);
+                alert('Import failed: ' + error.message);
+            }
+        };
+        input.click();
+    };
+
+    return (
+        <div className="w-[40%] mx-auto mb-6 rounded-3xl bg-white  relative">
+            <div className="flex items-center justify-between px-4 py-1 gap-4">
+                <div className="flex items-center gap-3">
+                    {/* Filter button */}
+                    <button
+                        onClick={() => setShowFilters(!showFilters)}
+                        className={`p-2 rounded-lg transition-colors hover:cursor-pointer ${showFilters ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}`}
+                        title="Filter cards"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z" clipRule="evenodd" />
+                        </svg>
+                    </button>
+
+                    {/* Sort controls */}
+                    <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-2">
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value)}
+                            className="text-sm text-gray-600 font-mono text-center bg-transparent border-none focus:outline-none cursor-pointer appearance-none"
+                        >
+                            <option value="cost">Cost</option>
+                            <option value="type">Type</option>
+                            <option value="id">Created</option>
+                        </select>
+                        <button
+                            onClick={toggleSort}
+                            className="text-gray-600 hover:text-gray-800 hover:cursor-pointer transition-colors"
+                            title={`Click to sort ${sortOrder === 'asc' ? 'descending' : 'ascending'}`}
+                        >
+                            {sortOrder === 'asc' ? <svg xmlns="http://www.w3.org/2000/svg" className='w-5 h-5' s viewBox="0 0 20 20"><title>Sort-descending</title><path fill="currentColor" d="M3 3a1 1 0 0 0 0 2h11a1 1 0 1 0 0-2zm0 4a1 1 0 0 0 0 2h7a1 1 0 1 0 0-2zm0 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2zm12-3a1 1 0 1 0-2 0v5.586l-1.293-1.293a1 1 0 0 0-1.414 1.414l3 3a1 1 0 0 0 1.414 0l3-3a1 1 0 0 0-1.414-1.414L15 13.586z" /></svg>
+                                : <svg xmlns="http://www.w3.org/2000/svg" className='w-5 h-5' viewBox="0 0 20 20"><title>Sort-ascending</title><path fill="currentColor" d="M3 3a1 1 0 0 0 0 2h11a1 1 0 1 0 0-2zm0 4a1 1 0 0 0 0 2h5a1 1 0 0 0 0-2zm0 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2zm10 5a1 1 0 1 0 2 0v-5.586l1.293 1.293a1 1 0 0 0 1.414-1.414l-3-3a1 1 0 0 0-1.414 0l-3 3a1 1 0 1 0 1.414 1.414L13 10.414z" /></svg>}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Export/Import buttons */}
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleImportClick}
+                        className="flex items-center gap-2 px-3 py-2 bg-green-100 hover:bg-green-200 text-green-700 rounded-lg text-sm font-mono transition-colors"
+                        title="Import cards from JSON file"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                        </svg>
+                        Import
+                    </button>
+                    <button
+                        onClick={handleExportClick}
+                        className="flex items-center gap-2 px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-sm font-mono transition-colors"
+                        title="Export cards to JSON file"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                        Export
+                    </button>
+                </div>
+            </div>
+
+            {/* Filter panel (absolutely positioned, overlays content) */}
+            {showFilters && (
+                <div className="absolute left-0 top-full w-full z-50 border-2 border-gray-300 bg-white rounded-b-3xl shadow-xl p-4 space-y-4" style={{ minWidth: '320px' }}>
+                    {/* Search text */}
+                    <div>
+                        <label className="block text-sm font-mono text-gray-600 mb-2">Search (name, description, affiliation)</label>
+                        <input
+                            type="text"
+                            value={searchText}
+                            onChange={(e) => setSearchText(e.target.value)}
+                            placeholder="Type to search..."
+                            className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-400"
+                        />
+                    </div>
+
+                    {/* Type filters */}
+                    <div>
+                        <label className="block text-sm font-mono text-gray-600 mb-2">Card Types</label>
+                        <div className="flex flex-wrap gap-2">
+                            {cardTypes.map(type => (
+                                <button
+                                    key={type}
+                                    onClick={() => toggleType(type)}
+                                    className={`px-3 py-1 rounded-full text-xs font-mono transition-colors ${filterTypes.includes(type)
+                                        ? 'bg-blue-500 text-white'
+                                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                        }`}
+                                >
+                                    {type}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Cost filters */}
+                    <div>
+                        <label className="block text-sm font-mono text-gray-600 mb-2">Costs</label>
+                        <div className="flex flex-wrap gap-2">
+                            {costs.map(cost => (
+                                <button
+                                    key={cost}
+                                    onClick={() => toggleCost(cost)}
+                                    className={`px-3 py-1 rounded-full text-xs font-mono transition-colors ${filterCosts.includes(cost)
+                                        ? 'bg-blue-500 text-white'
+                                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                        }`}
+                                >
+                                    {cost}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Clear filters */}
+                    {(filterTypes.length > 0 || filterCosts.length > 0 || searchText) && (
+                        <button
+                            onClick={() => {
+                                setFilterTypes([]);
+                                setFilterCosts([]);
+                                setSearchText('');
+                            }}
+                            className="text-sm text-red-600 hover:text-red-800 font-mono"
+                        >
+                            Clear all filters
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
 
 const CardManagerContent = () => {
-    const { cards } = useCards();
+    const { cards, dispatch } = useCards();
     const [selectedCard, setSelectedCard] = useState(null);
+
+    // Filter and sort state
+    const [filterTypes, setFilterTypes] = useState([]);
+    const [filterCosts, setFilterCosts] = useState([]);
+    const [searchText, setSearchText] = useState('');
+    const [sortBy, setSortBy] = useState('cost');
+    const [sortOrder, setSortOrder] = useState('asc');
+
+    // Flatten cards from buckets
+    const allCards = useMemo(() => {
+        const flattened = [];
+        if (cards && typeof cards === 'object') {
+            Object.values(cards).forEach(bucket => {
+                if (Array.isArray(bucket)) {
+                    flattened.push(...bucket);
+                }
+            });
+        }
+        return flattened;
+    }, [cards]);
+
+    // Apply filters
+    const filteredCards = useMemo(() => {
+        return allCards.filter(card => {
+            // Type filter
+            if (filterTypes.length > 0 && !filterTypes.includes(card.type)) {
+                return false;
+            }
+
+            // Cost filter
+            if (filterCosts.length > 0) {
+                // If filtering by 'X', exclude Leaders
+                if (filterCosts.includes('X')) {
+                    if (card.cost === 'X' && card.type === 'Leader') {
+                        return false;
+                    }
+                }
+                if (!filterCosts.includes(card.cost)) {
+                    return false;
+                }
+            }
+
+            // Search text filter (matches against name, description, affiliation)
+            if (searchText) {
+                const searchLower = searchText.toLowerCase();
+                const matchName = card.name?.toLowerCase().includes(searchLower);
+                const matchDesc = card.description?.toLowerCase().includes(searchLower);
+                const matchAff = Array.isArray(card.affiliation)
+                    ? card.affiliation.some(aff => aff?.toLowerCase().includes(searchLower))
+                    : card.affiliation?.toLowerCase().includes(searchLower);
+                if (!matchName && !matchDesc && !matchAff) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }, [allCards, filterTypes, filterCosts, searchText]);
+
+    const handleFilterChange = useCallback(({ types, costs, searchText: search }) => {
+        setFilterTypes(types);
+        setFilterCosts(costs);
+        setSearchText(search);
+    }, []);
+
+    const handleSortChange = useCallback(({ sortBy: sort, sortOrder: order }) => {
+        setSortBy(sort);
+        setSortOrder(order);
+    }, []);
+
+    const handleExport = useCallback(async () => {
+        return await exportCardsToJsonString();
+    }, []);
+
+    const handleImport = useCallback(async (jsonString, options) => {
+        const imported = await importCardsFromJsonString(jsonString, options);
+        window.location.reload(); // Refresh to reload from DB
+        return imported;
+    }, []);
+
+    const handleCardUpdate = useCallback(async (id, updates) => {
+        await updateCard(id, updates);
+        dispatch(cardActions.updateCard(id, updates));
+        // Update selected card if it's the one being edited
+        if (selectedCard?.id === id) {
+            setSelectedCard(prev => ({ ...prev, ...updates }));
+        }
+    }, [dispatch, selectedCard]);
+
+    const handleCardDelete = useCallback(async (id) => {
+        await deleteCardFromDb(id);
+        dispatch(cardActions.deleteCard(id));
+        // Clear selection if deleted card was selected
+        if (selectedCard?.id === id) {
+            setSelectedCard(null);
+        }
+    }, [dispatch, selectedCard]);
 
     return (
         <div className="w-screen h-screen bg-gray-100 p-10 flex flex-col">
-            {/* <h2 className="text-center text-gray-400 text-xl font-light mb-8 font-mono">
-                Window
-            </h2> */}
-
             {/* Control Panel */}
-            <div className='w-[50%] mx-auto text-center text-gray-400 text-xl font-light mb-8 font-mono rounded-3xl bg-white p-3'>Control Panel</div>
+            <ControlPanel
+                onFilterChange={handleFilterChange}
+                onSortChange={handleSortChange}
+                onExport={handleExport}
+                onImport={handleImport}
+            />
 
             <div className="grid grid-cols-[2fr_1fr_2fr] gap-5 flex-1 min-h-0">
                 {/* Left Column */}
                 <div className="flex flex-col gap-5 min-h-0">
                     {/* Counter and Diagram Section */}
                     <div className="flex-1 border-[3px] border-orange-400 rounded-3xl bg-white flex items-center justify-center p-5 pb-0">
-                        <BarGraph data={cards} />
+                        <BarGraph data={filteredCards} />
                     </div>
 
                     {/* Controller Section */}
@@ -729,13 +1214,23 @@ const CardManagerContent = () => {
 
                 {/* Current Card List Section */}
                 <div className="border-[3px] border-gray-300 rounded-3xl bg-white flex flex-col p-2 min-h-0">
-                    <CardList onSelect={setSelectedCard} selectedId={selectedCard?.id} />
+                    <CardList
+                        filteredCards={filteredCards}
+                        sortBy={sortBy}
+                        sortOrder={sortOrder}
+                        onSelect={setSelectedCard}
+                        selectedId={selectedCard?.id}
+                    />
                 </div>
 
                 {/* Card Section */}
                 <div className="border-[3px] border-blue-400 rounded-3xl bg-white flex items-center justify-center p-5">
                     {selectedCard ? (
-                        <CardShow {...selectedCard} />
+                        <CardShow
+                            {...selectedCard}
+                            onUpdate={handleCardUpdate}
+                            onDelete={handleCardDelete}
+                        />
                     ) : (
                         <p className="font-mono text-lg text-blue-400">Select a card from list</p>
                     )}
