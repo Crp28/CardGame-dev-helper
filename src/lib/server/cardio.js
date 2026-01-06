@@ -2,6 +2,7 @@
 // to mimic DB CRUD for card data coming from the CardController.
 
 import Dexie from 'dexie';
+import pako from 'pako';
 
 const DB_NAME = 'originTCG';
 const CARD_STORE = 'cards';
@@ -173,28 +174,72 @@ export const clearAllCards = async () => {
 };
 
 /**
- * Export all stored cards to a JSON string that can be shared/imported.
- * @param {object} options
- * @param {boolean} [options.pretty=true] pretty-print with indentation
- * @returns {Promise<string>}
+ * Export all stored cards to a compressed Base64 string.
+ * Uses Gzip compression + Base64 encoding for compact sharing.
+ * @returns {Promise<string>} Compressed Base64 string
  */
+export const exportCardsToCompressedString = async () => {
+    const cards = await getAllCards();
+    const jsonString = JSON.stringify({ cards });
+
+    // Convert string to Uint8Array
+    const encoder = new TextEncoder();
+    const data = encoder.encode(jsonString);
+
+    // Compress using Gzip
+    const compressed = pako.gzip(data);
+
+    // Convert to Base64
+    const base64 = btoa(String.fromCharCode(...compressed));
+
+    return base64;
+};
+
+/**
+ * Import cards from a compressed Base64 string.
+ * Decompresses (Base64 → Gzip → JSON) and imports cards.
+ * @param {string} compressedString Base64-encoded Gzip-compressed JSON
+ * @param {{ replace?: boolean }} options
+ * @returns {Promise<Array>} Imported cards
+ */
+export const importCardsFromCompressedString = async (compressedString, { replace = false } = {}) => {
+    try {
+        // Decode Base64
+        const binaryString = atob(compressedString.trim());
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // Decompress using Gzip
+        const decompressed = pako.ungzip(bytes);
+
+        // Convert back to string
+        const decoder = new TextDecoder();
+        const jsonString = decoder.decode(decompressed);
+
+        // Import the decompressed JSON
+        if (replace) {
+            await clearAllCards();
+        }
+
+        return createCardsFromJsonString(jsonString);
+    } catch (error) {
+        throw new Error('Failed to decompress or parse import data: ' + error.message);
+    }
+};
+
+// Legacy JSON export/import kept for backward compatibility
 export const exportCardsToJsonString = async (options = {}) => {
     const { pretty = true } = options;
     const cards = await getAllCards();
     return JSON.stringify({ cards }, null, pretty ? 2 : 0);
 };
 
-/**
- * Import cards from a JSON string. If `replace` is true, existing
- * records are cleared first; otherwise new cards are appended.
- * @param {string} jsonString
- * @param {{ replace?: boolean }} options
- */
 export const importCardsFromJsonString = async (jsonString, { replace = false } = {}) => {
     if (replace) {
         await clearAllCards();
     }
-
     return createCardsFromJsonString(jsonString);
 };
 

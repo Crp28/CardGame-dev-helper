@@ -4,7 +4,7 @@
 import React, { useLayoutEffect, useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import gsap from 'gsap';
 import { Flip } from 'gsap/Flip';
-import { createCard, createCardsFromJsonString, updateCard, deleteCard as deleteCardFromDb, exportCardsToJsonString, importCardsFromJsonString } from '@/lib/server/cardio';
+import { createCard, createCardsFromJsonString, updateCard, deleteCard as deleteCardFromDb, exportCardsToCompressedString, importCardsFromCompressedString } from '@/lib/server/cardio';
 import { CardProvider, cardActions, useCards, bucketCards } from './CardContext';
 
 // Force dynamic rendering to avoid SSR issues with IndexedDB
@@ -888,6 +888,10 @@ const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
     const [searchText, setSearchText] = useState('');
     const [sortBy, setSortBy] = useState('cost');
     const [sortOrder, setSortOrder] = useState('asc');
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
+    const [exportString, setExportString] = useState('');
+    const [importString, setImportString] = useState('');
 
     const cardTypes = ['Follower', 'Leader', 'Legend', 'Castable', 'Environment', 'Equipment', 'Enchantment'];
     const costs = ['X', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '10+'];
@@ -918,39 +922,41 @@ const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
 
     const handleExportClick = async () => {
         try {
-            const jsonString = await onExport();
-            const blob = new Blob([jsonString], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `cards-export-${Date.now()}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
+            const compressedString = await onExport();
+            setExportString(compressedString);
+            setShowExportModal(true);
         } catch (error) {
             console.error('Export failed', error);
-            alert('Export failed');
+            alert('Export failed: ' + error.message);
         }
     };
 
     const handleImportClick = () => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json';
-        input.onchange = async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
+        setImportString('');
+        setShowImportModal(true);
+    };
 
-            try {
-                const text = await file.text();
-                const replace = window.confirm('Replace existing cards? (Cancel to append)');
-                await onImport(text, { replace });
-                alert(`Import successful!`);
-            } catch (error) {
-                console.error('Import failed', error);
-                alert('Import failed: ' + error.message);
-            }
-        };
-        input.click();
+    const handleImportSubmit = async () => {
+        if (!importString.trim()) {
+            alert('Please enter a valid import string');
+            return;
+        }
+
+        try {
+            const replace = window.confirm('Replace existing cards? (Cancel to append)');
+            await onImport(importString, { replace });
+            setShowImportModal(false);
+            setImportString('');
+            alert('Import successful!');
+        } catch (error) {
+            console.error('Import failed', error);
+            alert('Import failed: ' + error.message);
+        }
+    };
+
+    const copyToClipboard = () => {
+        navigator.clipboard.writeText(exportString);
+        alert('Copied to clipboard!');
     };
 
     return (
@@ -1014,6 +1020,68 @@ const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
                     </button>
                 </div>
             </div>
+
+            {/* Export Modal */}
+            {showExportModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]" onClick={() => setShowExportModal(false)}>
+                    <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-mono font-bold mb-4 text-gray-800">Export Cards</h2>
+                        <p className="text-sm font-mono text-gray-600 mb-3">Copy this import string to share or backup your cards:</p>
+                        <textarea
+                            value={exportString}
+                            readOnly
+                            rows={8}
+                            className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-400 bg-gray-50 text-gray-800"
+                            onClick={(e) => e.target.select()}
+                        />
+                        <div className="flex gap-2 mt-4">
+                            <button
+                                onClick={copyToClipboard}
+                                className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-mono text-sm py-2 px-4 rounded-lg transition-colors"
+                            >
+                                Copy to Clipboard
+                            </button>
+                            <button
+                                onClick={() => setShowExportModal(false)}
+                                className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-mono text-sm py-2 px-4 rounded-lg transition-colors"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Import Modal */}
+            {showImportModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]" onClick={() => setShowImportModal(false)}>
+                    <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-mono font-bold mb-4 text-gray-800">Import Cards</h2>
+                        <p className="text-sm font-mono text-gray-600 mb-3">Paste an import string below:</p>
+                        <textarea
+                            value={importString}
+                            onChange={(e) => setImportString(e.target.value)}
+                            rows={8}
+                            placeholder="Paste compressed card data here..."
+                            className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-400 text-gray-800"
+                        />
+                        <div className="flex gap-2 mt-4">
+                            <button
+                                onClick={handleImportSubmit}
+                                className="flex-1 bg-green-500 hover:bg-green-600 text-white font-mono text-sm py-2 px-4 rounded-lg transition-colors"
+                            >
+                                Import
+                            </button>
+                            <button
+                                onClick={() => setShowImportModal(false)}
+                                className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-mono text-sm py-2 px-4 rounded-lg transition-colors"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Filter panel (absolutely positioned, overlays content) */}
             {showFilters && (
@@ -1161,11 +1229,11 @@ const CardManagerContent = () => {
     }, []);
 
     const handleExport = useCallback(async () => {
-        return await exportCardsToJsonString();
+        return await exportCardsToCompressedString();
     }, []);
 
-    const handleImport = useCallback(async (jsonString, options) => {
-        const imported = await importCardsFromJsonString(jsonString, options);
+    const handleImport = useCallback(async (compressedString, options) => {
+        const imported = await importCardsFromCompressedString(compressedString, options);
         window.location.reload(); // Refresh to reload from DB
         return imported;
     }, []);
