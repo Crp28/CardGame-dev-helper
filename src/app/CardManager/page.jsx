@@ -15,6 +15,110 @@ export const dynamic = 'force-dynamic';
 
 const formatAffiliation = (affiliation = []) => affiliation.join(' ');
 
+
+// ─── Deck drag-drop engine ────────────────────────────────────────────────
+// Module-level singleton so mouse handlers don't cause React re-renders.
+const _ds = { active: false, card: null, source: null, section: null, offsetX: 0, offsetY: 0, startX: 0, startY: 0, moved: false };
+let _ghostEl = null, _overlayEl = null, _overDeck = false;
+let _deckPanelRef = null, _onDragAdd = null, _onDragRemove = null;
+
+const _isOverDeck = (e) => {
+    if (!_deckPanelRef?.current) return false;
+    const r = _deckPanelRef.current.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+};
+
+const _cleanGhost = () => {
+    const el = _ghostEl; _ghostEl = null; _overlayEl = null;
+    if (el) gsap.to(el, { opacity: 0, scale: 0.85, duration: 0.18, ease: 'power2.in', onComplete: () => el.remove() });
+};
+
+const _setOverlay = (color, text) => {
+    if (!_overlayEl) return;
+    Object.assign(_overlayEl.style, { background: color });
+    _overlayEl.textContent = text;
+    gsap.to(_overlayEl, { opacity: 1, duration: 0.13 });
+};
+
+const _clearOverlay = () => {
+    if (!_overlayEl) return;
+    gsap.to(_overlayEl, { opacity: 0, duration: 0.13 });
+};
+
+// ─── ghost position helper (direct DOM, no GSAP transforms) ─────────────────
+const _moveGhost = (clientX, clientY) => {
+    if (!_ghostEl) return;
+    _ghostEl.style.left = (clientX - _ds.offsetX) + 'px';
+    _ghostEl.style.top = (clientY - _ds.offsetY) + 'px';
+};
+
+const _onDragMouseMove = (e) => {
+    if (!_ds.active) return;
+    const dist = Math.hypot(e.clientX - _ds.startX, e.clientY - _ds.startY);
+    if (!_ds.moved) {
+        if (dist < 5) return;
+        _ds.moved = true;
+        _spawnGhost();
+    }
+    _moveGhost(e.clientX, e.clientY);
+    const over = _isOverDeck(e);
+    if (over === _overDeck) return;
+    _overDeck = over;
+    if (_ds.source === 'grid') {
+        if (over) _setOverlay('rgba(34,197,94,0.45)', '+'); else _clearOverlay();
+    } else {
+        if (!over) _setOverlay('rgba(239,68,68,0.45)', '×'); else _clearOverlay();
+    }
+};
+
+const _onDragMouseUp = (e) => {
+    if (!_ds.active) return;
+    _ds.active = false;
+    document.removeEventListener('mousemove', _onDragMouseMove);
+    document.removeEventListener('mouseup', _onDragMouseUp);
+    if (_ds.moved) {
+        const over = _isOverDeck(e);
+        if (_ds.source === 'grid' && over) _onDragAdd?.(_ds.card);
+        else if (_ds.source === 'deck' && !over) _onDragRemove?.(_ds.card, _ds.section);
+    }
+    _cleanGhost();
+    _overDeck = false;
+};
+
+const initDeckDrag = ({ deckPanelRef, onAdd, onRemove }) => {
+    _deckPanelRef = deckPanelRef;
+    _onDragAdd = onAdd;
+    _onDragRemove = onRemove;
+};
+
+const _spawnGhost = () => {
+    const { src, rect: r, startX, startY, offsetX, offsetY } = _ds;
+    const clone = src.cloneNode(true);
+    // Use left/top for position — keeps GSAP transforms free for opacity-only animation
+    clone.style.cssText = `position:fixed;left:${startX - offsetX}px;top:${startY - offsetY}px;width:${r.width}px;height:${r.height}px;pointer-events:none;z-index:9999;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.28);overflow:hidden;opacity:0;background:white;transition:none;`;
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:2.5rem;font-weight:900;opacity:0;pointer-events:none;';
+    clone.appendChild(overlay);
+    document.body.appendChild(clone);
+    // GSAP only touches opacity — no transform conflict
+    gsap.to(clone, { opacity: 0.9, duration: 0.14 });
+    _ghostEl = clone; _overlayEl = overlay;
+};
+
+const startCardDrag = (card, source, section, e) => {
+    if (e.button !== 0) return;
+    // Prevent browser native button/text drag from hijacking our mousemove events
+    e.preventDefault();
+    const src = e.currentTarget;
+    const r = src.getBoundingClientRect();
+    // Store the rect snapshot at mousedown so _spawnGhost has a reliable size even if element moves
+    Object.assign(_ds, { active: true, card, source, section, src, rect: r, offsetX: r.width / 2, offsetY: r.height / 2, startX: e.clientX, startY: e.clientY, moved: false });
+    _overDeck = source === 'deck';
+    document.addEventListener('mousemove', _onDragMouseMove);
+    document.addEventListener('mouseup', _onDragMouseUp);
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 const BarGraph = ({ data, maxBarPx = 250 }) => {
     const { cards } = useCards();
     const [selectedCost, setSelectedCost] = useState(null);
@@ -1218,7 +1322,7 @@ const DeckMakerCardGrid = ({ filteredCards, sortBy, sortOrder, onSelect, selecte
                 const border = borderByType[card.type] || 'border-gray-300';
                 const bg = isSelected ? (bgByType[card.type] || 'bg-gray-100') : '';
                 return (
-                    <button
+                    <div
                         key={card.id ?? `${card.name}-${card.cost}`}
                         onClick={() => onSelect?.(card)}
                         onContextMenu={(e) => {
@@ -1229,12 +1333,13 @@ const DeckMakerCardGrid = ({ filteredCards, sortBy, sortOrder, onSelect, selecte
                                 onAddCard?.(card);
                             }
                         }}
-                        title={onAddCard ? 'Right-click: add to deck · Shift+right-click: add to sideboard' : undefined}
+                        title={onAddCard ? 'Right-click: add to deck · Shift+right-click: add to sideboard · Drag into deck to add' : undefined}
+                        onMouseDown={onAddCard ? (e) => startCardDrag(card, 'grid', null, e) : undefined}
                         className={`aspect-[3/4] flex flex-col items-center justify-center border-2 rounded-xl p-1 text-center transition-all hover:cursor-pointer hover:scale-[1.03] ${border} ${bg}`}
                     >
                         <span className="font-mono text-xs text-blue-500 mb-1">{card.type === 'Leader' ? '⭐' : card.cost}</span>
                         <span className="font-mono text-xs text-gray-800 font-semibold leading-tight text-center break-words w-full px-1">{card.name || 'Untitled'}</span>
-                    </button>
+                    </div>
                 );
             })}
         </div>
@@ -1356,7 +1461,8 @@ const DeckCardRow = ({ card, section, onSelectCard, onRemoveCard }) => {
             className={`w-full border-2 ${border} ${bg} ${bgHover} rounded-xl px-2 py-2 font-mono text-sm text-gray-700 flex items-center gap-2 hover:cursor-pointer transition-colors select-none`}
             onClick={() => onSelectCard?.(card)}
             onContextMenu={(e) => { e.preventDefault(); onRemoveCard?.(card, section); }}
-            title="Left-click to preview · Right-click to remove"
+            onMouseDown={(e) => startCardDrag(card, 'deck', section, e)}
+            title="Left-click to preview · Right-click to remove · Drag out to remove"
         >
             {isLeader
                 ? <span className="text-amber-500 text-xs shrink-0">★</span>
@@ -1533,6 +1639,7 @@ const CardManagerContent = () => {
     const [mode, setMode] = useState('card'); // 'card' or 'deck'
     const [deckView, setDeckView] = useState('list'); // 'list' | 'edit'
     const [selectedDeck, setSelectedDeck] = useState(null);
+    const deckPanelRef = useRef(null);
 
     // Filter and sort state
     const [filterTypes, setFilterTypes] = useState([]);
@@ -1689,6 +1796,15 @@ const CardManagerContent = () => {
         setSelectedCard(card);
     }, []);
 
+    // Keep drag engine in sync with latest callbacks + ref
+    useEffect(() => {
+        initDeckDrag({
+            deckPanelRef,
+            onAdd: handleAddCardToDeck,
+            onRemove: handleRemoveCardFromDeck,
+        });
+    }, [handleAddCardToDeck, handleRemoveCardFromDeck]);
+
     // Shared control panel props
     const controlPanelProps = {
         onFilterChange: handleFilterChange,
@@ -1763,7 +1879,7 @@ const CardManagerContent = () => {
                     </div>
 
                     {/* Mid Column — Deck List or Current Deck */}
-                    <div className="relative border-[3px] border-gray-300 rounded-3xl bg-white flex flex-col p-2 min-h-0">
+                    <div ref={deckPanelRef} className="relative border-[3px] border-gray-300 rounded-3xl bg-white flex flex-col p-2 min-h-0">
                         {deckView === 'list' ? (
                             <DeckListPanel onSelectDeck={handleDeckSelect} />
                         ) : (
