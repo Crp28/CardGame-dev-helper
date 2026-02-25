@@ -5,7 +5,7 @@ import React, { createContext, useContext, useEffect, useMemo, useReducer } from
 import { getAllCards } from '@/lib/server/cardio';
 
 // Base shape keyed by cost bucket
-const INITIAL_CARDS = { 'X': [], '0': [], '1': [], '2': [], '3': [], '4': [], '5': [], '6': [], '7': [], '8': [], '9': [], '10': [], '10+': [] };
+const INITIAL_CARDS = { 'X': [], '0': [], '1': [], '2': [], '3': [], '4': [], '5': [], '6': [], '7': [], '8': [], '9': [], '10': [], '10+': [], 'Leader': [] };
 
 const CardContext = createContext(null);
 
@@ -21,7 +21,7 @@ const ensureBucketedCopy = (state) => {
 const bucketize = (cards = []) => {
     const next = ensureBucketedCopy(INITIAL_CARDS);
     for (const card of cards) {
-        const bucket = card?.cost ?? 'X';
+        const bucket = card?.type === 'Leader' ? 'Leader' : (card?.cost || 'X');
         if (!next[bucket]) next[bucket] = [];
         next[bucket] = [...next[bucket], card];
     }
@@ -33,7 +33,7 @@ const cardReducer = (state, action) => {
         case 'ADD_CARD': {
             const next = ensureBucketedCopy(state);
             const card = action.payload;
-            const bucket = card.cost ?? 'X';
+            const bucket = card.type === 'Leader' ? 'Leader' : (card.cost || 'X');
             if (!next[bucket]) next[bucket] = [];
             next[bucket] = [...next[bucket], card];
             return next;
@@ -41,7 +41,7 @@ const cardReducer = (state, action) => {
         case 'ADD_CARDS': {
             const next = ensureBucketedCopy(state);
             for (const card of action.payload || []) {
-                const bucket = card.cost ?? 'X';
+                const bucket = card.type === 'Leader' ? 'Leader' : (card.cost || 'X');
                 if (!next[bucket]) next[bucket] = [];
                 next[bucket] = [...next[bucket], card];
             }

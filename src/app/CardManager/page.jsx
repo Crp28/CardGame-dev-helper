@@ -261,7 +261,7 @@ const CardController = () => {
         name: '',
         affiliation: '',
         description: '',
-        cost: '',
+        cost: 'X',
         attack: '',
         life: '',
         phyRes: '',
@@ -275,10 +275,14 @@ const CardController = () => {
 
     const handleSingleInputChange = (e) => {
         const { name, value } = e.target;
-        setSingleFormData(prev => ({
-            ...prev,
-            [name]: value
-        }));
+        setSingleFormData(prev => {
+            const next = { ...prev, [name]: value };
+            // When switching type, reset cost appropriately
+            if (name === 'type') {
+                next.cost = value === 'Leader' ? '' : (prev.type === 'Leader' ? 'X' : prev.cost);
+            }
+            return next;
+        });
     };
 
     const handleBulkInputChange = (e) => {
@@ -479,7 +483,6 @@ const CardController = () => {
                                     onChange={handleSingleInputChange}
                                     className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:border-red-300 transition-colors"
                                     placeholder="0"
-                                    defaultValue='0'
                                 />
                             </div> : <></>}
                             {singleFormData.type === "Legend" ? <div className='flex-1 flex flex-col min-w-0'>
@@ -494,7 +497,6 @@ const CardController = () => {
                                     onChange={handleSingleInputChange}
                                     className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:border-red-300 transition-colors"
                                     placeholder="0"
-                                    defaultValue='0'
                                 />
                             </div> : <></>}
                             {singleFormData.type === "Follower" || singleFormData.type === "Legend" || singleFormData.type === "Equipment" || singleFormData.type === "Leader" ? <div className='flex-1 flex flex-col min-w-0'>
@@ -509,7 +511,6 @@ const CardController = () => {
                                     onChange={handleSingleInputChange}
                                     className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 font-mono text-sm focus: outline-none focus:border-red-300 transition-colors"
                                     placeholder="0"
-                                    defaultValue='0'
                                 />
                             </div> : <></>}
                             {singleFormData.type === "Follower" || singleFormData.type === "Legend" || singleFormData.type === "Leader" ? <div className='flex-1 flex flex-col min-w-0'>
@@ -524,7 +525,6 @@ const CardController = () => {
                                     onChange={handleSingleInputChange}
                                     className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:border-red-300 transition-colors"
                                     placeholder="0"
-                                    defaultValue='0'
                                 />
                             </div> : <></>}
                             {singleFormData.type === "Follower" || singleFormData.type === "Legend" || singleFormData.type === "Leader" ? <div className='flex-1 flex flex-col min-w-0'>
@@ -539,7 +539,6 @@ const CardController = () => {
                                     onChange={handleSingleInputChange}
                                     className="w-full border-2 border-gray-300 rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:border-red-300 transition-colors"
                                     placeholder="0"
-                                    defaultValue='0'
                                 />
                             </div> : <></>}
                         </div>
@@ -1593,6 +1592,13 @@ const CardManagerContent = () => {
         });
     }, [allCards, filterTypes, filterCosts, searchText]);
 
+    // Flat array of non-leader cards in the currently selected deck (cards + sideboard)
+    const deckCards = useMemo(() => {
+        if (!selectedDeck) return null;
+        const live = decks.find(d => d.id === selectedDeck.id) ?? selectedDeck;
+        return [...(live.cards ?? []), ...(live.sideboard ?? [])];
+    }, [selectedDeck, decks]);
+
     const handleFilterChange = useCallback(({ types, costs, searchText: search }) => {
         setFilterTypes(types);
         setFilterCosts(costs);
@@ -1644,10 +1650,10 @@ const CardManagerContent = () => {
 
     const handleDeckDelete = useCallback(async (id) => {
         await deleteDeckFromDb(id);
-        dispatch(deckActions.deleteDeck(id));
+        deckDispatch(deckActions.deleteDeck(id));
         setSelectedDeck(null);
         setDeckView('list');
-    }, [dispatch]);
+    }, [deckDispatch]);
 
     const handleAddCardToDeck = useCallback(async (card) => {
         if (!selectedDeck) return;
@@ -1788,7 +1794,11 @@ const CardManagerContent = () => {
 
                         {/* Counter and Diagram */}
                         <div className="border-[3px] border-orange-400 rounded-3xl bg-white flex items-center justify-center p-5 pb-0">
-                            <BarGraph data={filteredCards} maxBarPx={150} />
+                            {deckCards !== null ? (
+                                <BarGraph data={deckCards} maxBarPx={150} />
+                            ) : (
+                                <p className="font-mono text-sm text-orange-300 text-center">Select a deck to view its cost curve.</p>
+                            )}
                         </div>
                     </div>
                 </div>
