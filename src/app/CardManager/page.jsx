@@ -6,13 +6,16 @@ import gsap from 'gsap';
 import { Flip } from 'gsap/Flip';
 import { createCard, createCardsFromJsonString, updateCard, deleteCard as deleteCardFromDb, exportCardsToCompressedString, importCardsFromCompressedString } from '@/lib/server/cardio';
 import { CardProvider, cardActions, useCards, bucketCards } from './CardContext';
+import { DeckProvider, useDecks, deckActions } from './DeckContext';
+import { createDeck, updateDeck as updateDeckInDb, deleteDeck as deleteDeckFromDb } from '@/lib/server/deckio';
+import TabSwitch from '@/lib/components/tabswitch';
 
 // Force dynamic rendering to avoid SSR issues with IndexedDB
 export const dynamic = 'force-dynamic';
 
 const formatAffiliation = (affiliation = []) => affiliation.join(' ');
 
-const BarGraph = ({ data }) => {
+const BarGraph = ({ data, maxBarPx = 250 }) => {
     const { cards } = useCards();
     const [selectedCost, setSelectedCost] = useState(null);
     const graphData = data ?? cards;
@@ -76,7 +79,7 @@ const BarGraph = ({ data }) => {
     );
 
     const maxValue = Math.max(1, maxbarheight);
-    const MAX_BAR_PX = 220;
+    const MAX_BAR_PX = maxBarPx;
 
     useLayoutEffect(() => {
         const wasFocused = prevSelectedRef.current !== null && prevSelectedRef.current !== undefined;
@@ -881,7 +884,7 @@ const CardShow = ({ id, name, type, cost, affiliation, description, attack, life
     );
 };
 
-const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
+const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport, mode, onModeChange }) => {
     const [showFilters, setShowFilters] = useState(false);
     const [filterTypes, setFilterTypes] = useState([]);
     const [filterCosts, setFilterCosts] = useState([]);
@@ -990,10 +993,15 @@ const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
                             className="text-gray-600 hover:text-gray-800 hover:cursor-pointer transition-colors"
                             title={`Click to sort ${sortOrder === 'asc' ? 'descending' : 'ascending'}`}
                         >
-                            {sortOrder === 'asc' ? <svg xmlns="http://www.w3.org/2000/svg" className='w-5 h-5' s viewBox="0 0 20 20"><title>Sort-descending</title><path fill="currentColor" d="M3 3a1 1 0 0 0 0 2h11a1 1 0 1 0 0-2zm0 4a1 1 0 0 0 0 2h7a1 1 0 1 0 0-2zm0 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2zm12-3a1 1 0 1 0-2 0v5.586l-1.293-1.293a1 1 0 0 0-1.414 1.414l3 3a1 1 0 0 0 1.414 0l3-3a1 1 0 0 0-1.414-1.414L15 13.586z" /></svg>
+                            {sortOrder === 'asc' ? <svg xmlns="http://www.w3.org/2000/svg" className='w-5 h-5' viewBox="0 0 20 20"><title>Sort-descending</title><path fill="currentColor" d="M3 3a1 1 0 0 0 0 2h11a1 1 0 1 0 0-2zm0 4a1 1 0 0 0 0 2h7a1 1 0 1 0 0-2zm0 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2zm12-3a1 1 0 1 0-2 0v5.586l-1.293-1.293a1 1 0 0 0-1.414 1.414l3 3a1 1 0 0 0 1.414 0l3-3a1 1 0 0 0-1.414-1.414L15 13.586z" /></svg>
                                 : <svg xmlns="http://www.w3.org/2000/svg" className='w-5 h-5' viewBox="0 0 20 20"><title>Sort-ascending</title><path fill="currentColor" d="M3 3a1 1 0 0 0 0 2h11a1 1 0 1 0 0-2zm0 4a1 1 0 0 0 0 2h5a1 1 0 0 0 0-2zm0 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2zm10 5a1 1 0 1 0 2 0v-5.586l1.293 1.293a1 1 0 0 0 1.414-1.414l-3-3a1 1 0 0 0-1.414 0l-3 3a1 1 0 1 0 1.414 1.414L13 10.414z" /></svg>}
                         </button>
                     </div>
+                </div>
+
+                {/* TabSwitch component - Switches between Card Maker and Deck Maker modes*/}
+                <div className="flex-1 flex items-center justify-center">
+                    <TabSwitch mode={mode} onChange={onModeChange} />
                 </div>
 
                 {/* Export/Import buttons */}
@@ -1155,9 +1163,377 @@ const ControlPanel = ({ onFilterChange, onSortChange, onExport, onImport }) => {
     );
 };
 
+// Deck Maker: 4-column grid of card thumbnails
+const DeckMakerCardGrid = ({ filteredCards, sortBy, sortOrder, onSelect, selectedId, onAddCard, onAddToSideboard }) => {
+    const allCards = useMemo(() => {
+        let result = filteredCards || [];
+        if (sortBy === 'id') {
+            result = [...result].sort((a, b) => sortOrder === 'asc' ? (a.id - b.id) : (b.id - a.id));
+        } else if (sortBy === 'type') {
+            result = [...result].sort((a, b) => {
+                const cmp = a.type.localeCompare(b.type);
+                return sortOrder === 'asc' ? cmp : -cmp;
+            });
+        } else if (sortBy === 'cost') {
+            const costOrder = ['X', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '10+', ''];
+            result = [...result].sort((a, b) => {
+                const aIdx = costOrder.indexOf(a.cost ?? '');
+                const bIdx = costOrder.indexOf(b.cost ?? '');
+                const cmp = aIdx - bIdx;
+                return sortOrder === 'asc' ? cmp : -cmp;
+            });
+        }
+        return result;
+    }, [filteredCards, sortBy, sortOrder]);
+
+    const borderByType = {
+        Environment: 'border-lime-300',
+        Castable: 'border-blue-300/90',
+        Follower: 'border-pink-300',
+        Leader: 'border-amber-400',
+        Equipment: 'border-purple-400',
+        Enchantment: 'border-teal-400',
+        Legend: 'border-rose-500/80',
+    };
+    const bgByType = {
+        Environment: 'bg-lime-50',
+        Castable: 'bg-blue-50',
+        Follower: 'bg-pink-50',
+        Leader: 'bg-amber-50',
+        Equipment: 'bg-violet-50',
+        Enchantment: 'bg-teal-50',
+        Legend: 'bg-rose-50',
+    };
+
+    if (!allCards.length) {
+        return <p className="font-mono text-sm text-gray-400 p-4">No cards match</p>;
+    }
+
+    return (
+        <div
+            className="w-full h-full flex-1 min-h-0 overflow-y-scroll p-2 select-none grid grid-cols-5 auto-rows-max gap-2 content-start"
+            style={{ scrollbarGutter: 'stable' }}
+        >
+            {allCards.map((card) => {
+                const isSelected = selectedId === card.id;
+                const border = borderByType[card.type] || 'border-gray-300';
+                const bg = isSelected ? (bgByType[card.type] || 'bg-gray-100') : '';
+                return (
+                    <button
+                        key={card.id ?? `${card.name}-${card.cost}`}
+                        onClick={() => onSelect?.(card)}
+                        onContextMenu={(e) => {
+                            e.preventDefault();
+                            if (e.shiftKey) {
+                                onAddToSideboard?.(card);
+                            } else {
+                                onAddCard?.(card);
+                            }
+                        }}
+                        title={onAddCard ? 'Right-click: add to deck · Shift+right-click: add to sideboard' : undefined}
+                        className={`aspect-[3/4] flex flex-col items-center justify-center border-2 rounded-xl p-1 text-center transition-all hover:cursor-pointer hover:scale-[1.03] ${border} ${bg}`}
+                    >
+                        <span className="font-mono text-xs text-blue-500 mb-1">{card.type === 'Leader' ? '⭐' : card.cost}</span>
+                        <span className="font-mono text-xs text-gray-800 font-semibold leading-tight text-center break-words w-full px-1">{card.name || 'Untitled'}</span>
+                    </button>
+                );
+            })}
+        </div>
+    );
+};
+
+// Deck List view — shows list of decks with a "+ New" button
+const DeckListPanel = ({ onSelectDeck }) => {
+    const { decks, dispatch } = useDecks();
+    const [editingId, setEditingId] = useState(null);
+    const [draftName, setDraftName] = useState('');
+    const inputRef = useRef(null);
+
+    // Focus the input whenever editingId changes to a non-null value
+    useEffect(() => {
+        if (editingId !== null && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [editingId]);
+
+    const handleNew = async () => {
+        const deck = await createDeck({ name: '', cards: [], leaders: [], sideboard: [] });
+        dispatch(deckActions.addDeck(deck));
+        setDraftName('');
+        setEditingId(deck.id);
+    };
+
+    const commitName = async (id) => {
+        const name = draftName.trim() || 'Untitled Deck';
+        await updateDeckInDb(id, { name });
+        dispatch(deckActions.updateDeck(id, { name }));
+        setEditingId(null);
+    };
+
+    const handleKeyDown = (e, id) => {
+        if (e.key === 'Enter') commitName(id);
+        if (e.key === 'Escape') {
+            setEditingId(null);
+            // If name was never set, leave blank (already committed as Untitled via blur)
+        }
+    };
+
+    return (
+        <div className="w-full h-full flex flex-col min-h-0">
+            <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-2" style={{ scrollbarGutter: 'stable' }}>
+                {decks.map((deck) => (
+                    <div key={deck.id} className="w-full">
+                        {editingId === deck.id ? (
+                            <input
+                                ref={inputRef}
+                                type="text"
+                                value={draftName}
+                                onChange={(e) => setDraftName(e.target.value)}
+                                onKeyDown={(e) => handleKeyDown(e, deck.id)}
+                                onBlur={() => commitName(deck.id)}
+                                placeholder="Deck name…"
+                                className="w-full border-2 border-blue-400 rounded-xl px-4 py-3 font-mono text-sm text-gray-700 outline-none focus:border-blue-500 bg-blue-50"
+                            />
+                        ) : (
+                            <button
+                                onClick={() => onSelectDeck?.(deck)}
+                                className="w-full border-2 border-gray-300 rounded-xl px-4 py-3 text-left font-mono text-sm text-gray-700 hover:bg-gray-100 hover:border-gray-400 transition-all hover:cursor-pointer"
+                            >
+                                {deck.name || 'Untitled Deck'}
+                            </button>
+                        )}
+                    </div>
+                ))}
+            </div>
+            <div className="p-3 border-t border-gray-200 flex justify-center">
+                <button
+                    onClick={handleNew}
+                    className="font-mono text-green-500 hover:text-green-600 transition-colors hover:cursor-pointer"
+                >
+                    <b>+ New</b>
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// Shared constants for deck card rows
+const DECK_BORDER_BY_TYPE = {
+    Environment: 'border-lime-300',
+    Castable: 'border-blue-300/90',
+    Follower: 'border-pink-300',
+    Leader: 'border-amber-400',
+    Equipment: 'border-purple-400',
+    Enchantment: 'border-teal-400',
+    Legend: 'border-rose-500/80',
+};
+const DECK_BG_BY_TYPE = {
+    Environment: ['bg-lime-50', 'hover:bg-lime-100'],
+    Castable: ['bg-blue-50', 'hover:bg-blue-100'],
+    Follower: ['bg-pink-50', 'hover:bg-pink-100'],
+    Leader: ['bg-amber-50', 'hover:bg-amber-100'],
+    Equipment: ['bg-violet-50', 'hover:bg-violet-100'],
+    Enchantment: ['bg-teal-50', 'hover:bg-teal-100'],
+    Legend: ['bg-rose-50', 'hover:bg-rose-100'],
+};
+const DECK_COST_ORDER = ['X', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '10+', ''];
+const sortByCost = (list) =>
+    [...list].sort((a, b) => {
+        const ai = DECK_COST_ORDER.indexOf(a.cost ?? '');
+        const bi = DECK_COST_ORDER.indexOf(b.cost ?? '');
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+
+const SectionLabel = ({ label }) => (
+    <p className="font-mono text-xs text-gray-400 uppercase tracking-widest px-1 pt-2 pb-1">{label}</p>
+);
+
+const DeckCardRow = ({ card, section, onSelectCard, onRemoveCard }) => {
+    const border = DECK_BORDER_BY_TYPE[card.type] || 'border-gray-300';
+    const [bg, bgHover] = DECK_BG_BY_TYPE[card.type] || ['bg-white', 'hover:bg-gray-50'];
+    const isLeader = card.type === 'Leader';
+    return (
+        <div
+            className={`w-full border-2 ${border} ${bg} ${bgHover} rounded-xl px-2 py-2 font-mono text-sm text-gray-700 flex items-center gap-2 hover:cursor-pointer transition-colors select-none`}
+            onClick={() => onSelectCard?.(card)}
+            onContextMenu={(e) => { e.preventDefault(); onRemoveCard?.(card, section); }}
+            title="Left-click to preview · Right-click to remove"
+        >
+            {isLeader
+                ? <span className="text-amber-500 text-xs shrink-0">★</span>
+                : <span className="text-xs text-blue-500 font-bold w-5 text-center shrink-0">{card.cost ?? 'X'}</span>
+            }
+            <span className="flex-1 truncate">{card.name || 'Untitled'}</span>
+        </div>
+    );
+};
+
+// Current Deck (Deck Edit) view — shows cards in the selected deck with a "← Save" button
+const CurrentDeckPanel = ({ deck, onBack, onDelete, onSelectCard, onRemoveCard }) => {
+    const { decks, dispatch } = useDecks();
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [editingName, setEditingName] = useState(false);
+    const [draftName, setDraftName] = useState('');
+    const nameInputRef = useRef(null);
+
+    // Always read the freshest version of this deck from context
+    const liveDeck = decks.find(d => d.id === deck?.id) ?? deck ?? {};
+    const { name = '', leaders = [], cards = [], sideboard = [] } = liveDeck;
+
+    const handleDelete = async () => {
+        await onDelete?.(liveDeck.id);
+        setShowDeleteConfirm(false);
+    };
+
+    const startEditingName = () => {
+        setDraftName(name);
+        setEditingName(true);
+        // Focus on next tick after render
+        setTimeout(() => nameInputRef.current?.focus(), 0);
+    };
+
+    const commitNameEdit = async () => {
+        const trimmed = draftName.trim() || 'Untitled Deck';
+        await updateDeckInDb(liveDeck.id, { name: trimmed });
+        dispatch(deckActions.updateDeck(liveDeck.id, { name: trimmed }));
+        setEditingName(false);
+    };
+
+    const handleNameKeyDown = (e) => {
+        if (e.key === 'Enter') commitNameEdit();
+        if (e.key === 'Escape') setEditingName(false);
+    };
+
+    return (
+        <div className="w-full h-full flex flex-col min-h-0">
+            {/* Delete confirmation overlay */}
+            {showDeleteConfirm && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/20 rounded-3xl">
+                    <div className="bg-white border-2 border-red-300 rounded-2xl p-5 mx-4 shadow-lg flex flex-col gap-3">
+                        <p className="font-mono text-sm text-gray-700 text-center">Delete <b>{name || 'this deck'}</b>?</p>
+                        <div className="flex gap-2 justify-center">
+                            <button
+                                onClick={handleDelete}
+                                className="font-mono text-sm px-4 py-1.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors hover:cursor-pointer"
+                            >
+                                Delete
+                            </button>
+                            <button
+                                onClick={() => setShowDeleteConfirm(false)}
+                                className="font-mono text-sm px-4 py-1.5 border-2 border-gray-300 rounded-xl hover:bg-gray-100 transition-colors hover:cursor-pointer"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Deck name header */}
+            <div className="border-2 border-gray-200 rounded-2xl p-3 mx-1 mt-1 mb-2 flex flex-col gap-2">
+                {/* Name row */}
+                <div className="flex items-center justify-between gap-2">
+                    {editingName ? (
+                        <input
+                            ref={nameInputRef}
+                            type="text"
+                            value={draftName}
+                            onChange={(e) => setDraftName(e.target.value)}
+                            onKeyDown={handleNameKeyDown}
+                            onBlur={commitNameEdit}
+                            className="flex-1 font-mono text-sm font-semibold text-gray-800 border-b-2 border-blue-400 outline-none bg-transparent min-w-0"
+                        />
+                    ) : (
+                        <span
+                            className="font-mono text-sm font-semibold text-gray-800 truncate flex-1 cursor-pointer hover:text-blue-600 transition-colors"
+                            onDoubleClick={startEditingName}
+                            title="Double-click to rename"
+                        >
+                            {name || 'Untitled Deck'}
+                        </span>
+                    )}
+                    <button
+                        onClick={() => setShowDeleteConfirm(true)}
+                        className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1 rounded-lg transition-colors hover:cursor-pointer shrink-0"
+                        title="Delete this deck"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                    </button>
+                </div>
+                {/* Section counts */}
+                <div className="flex gap-4 text-xs font-mono text-gray-500">
+                    {/* Cards count — playing card icon */}
+                    <span className="flex items-center gap-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-400" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M4 4a2 2 0 012-2h12a2 2 0 012 2v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" />
+                        </svg>
+                        <span className="text-blue-500">{cards.length}</span>
+                    </span>
+                    {/* Leaders count — crown icon */}
+                    <span className="flex items-center gap-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M5 16l-2-9 5.5 4L12 3l3.5 8L21 7l-2 9H5z" />
+                        </svg>
+                        <span className="text-yellow-500">{leaders.length}</span>
+                    </span>
+                    {/* Sideboard count — tray/inbox icon */}
+                    <span className="flex items-center gap-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-400" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M2 7a2 2 0 012-2h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7zm2 7v3h16v-3h-4a2 2 0 01-4 0H4z" />
+                        </svg>
+                        <span className="text-gray-500">{sideboard.length}</span>
+                    </span>
+                </div>
+            </div>
+
+            {/* Card list: Leaders / Cards / Sideboard */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-1 pb-1 flex flex-col gap-1.5" style={{ scrollbarGutter: 'stable' }}>
+                {leaders.length > 0 && (
+                    <>
+                        <SectionLabel label="Leaders" />
+                        {sortByCost(leaders).map((card, i) => <DeckCardRow key={`${card.id}-${i}`} card={card} section="leaders" onSelectCard={onSelectCard} onRemoveCard={onRemoveCard} />)}
+                    </>
+                )}
+                {cards.length > 0 && (
+                    <>
+                        <SectionLabel label="Cards" />
+                        {sortByCost(cards).map((card, i) => <DeckCardRow key={`${card.id}-${i}`} card={card} section="cards" onSelectCard={onSelectCard} onRemoveCard={onRemoveCard} />)}
+                    </>
+                )}
+                {sideboard.length > 0 && (
+                    <>
+                        <SectionLabel label="Sideboard" />
+                        {sortByCost(sideboard).map((card, i) => <DeckCardRow key={`${card.id}-${i}`} card={card} section="sideboard" onSelectCard={onSelectCard} onRemoveCard={onRemoveCard} />)}
+                    </>
+                )}
+                {leaders.length === 0 && cards.length === 0 && sideboard.length === 0 && (
+                    <p className="font-mono text-xs text-gray-300 text-center mt-6">No cards yet</p>
+                )}
+            </div>
+
+            {/* Save / back footer */}
+            <div className="p-3 border-t border-gray-200 flex justify-center">
+                <button
+                    onClick={onBack}
+                    className="font-mono text-green-500 hover:text-green-600 transition-colors hover:cursor-pointer"
+                >
+                    <b>← Save</b>
+                </button>
+            </div>
+        </div>
+    );
+};
+
+
 const CardManagerContent = () => {
     const { cards, dispatch } = useCards();
+    const { decks, dispatch: deckDispatch } = useDecks();
     const [selectedCard, setSelectedCard] = useState(null);
+    const [mode, setMode] = useState('card'); // 'card' or 'deck'
+    const [deckView, setDeckView] = useState('list'); // 'list' | 'edit'
+    const [selectedDeck, setSelectedDeck] = useState(null);
 
     // Filter and sort state
     const [filterTypes, setFilterTypes] = useState([]);
@@ -1256,62 +1632,179 @@ const CardManagerContent = () => {
         }
     }, [dispatch, selectedCard]);
 
+    const handleDeckSelect = useCallback((deck) => {
+        setSelectedDeck(deck);
+        setDeckView('edit');
+    }, []);
+
+    const handleDeckBack = useCallback(() => {
+        setSelectedDeck(null);
+        setDeckView('list');
+    }, []);
+
+    const handleDeckDelete = useCallback(async (id) => {
+        await deleteDeckFromDb(id);
+        dispatch(deckActions.deleteDeck(id));
+        setSelectedDeck(null);
+        setDeckView('list');
+    }, [dispatch]);
+
+    const handleAddCardToDeck = useCallback(async (card) => {
+        if (!selectedDeck) return;
+        const liveDeck = decks.find(d => d.id === selectedDeck.id) ?? selectedDeck;
+        const isLeader = card.type === 'Leader';
+        const field = isLeader ? 'leaders' : 'cards';
+        const updated = [...(liveDeck[field] ?? []), card];
+        await updateDeckInDb(selectedDeck.id, { [field]: updated });
+        deckDispatch(deckActions.updateDeck(selectedDeck.id, { [field]: updated }));
+    }, [selectedDeck, decks, deckDispatch]);
+
+    const handleAddToSideboard = useCallback(async (card) => {
+        if (!selectedDeck) return;
+        const liveDeck = decks.find(d => d.id === selectedDeck.id) ?? selectedDeck;
+        const updated = [...(liveDeck.sideboard ?? []), card];
+        await updateDeckInDb(selectedDeck.id, { sideboard: updated });
+        deckDispatch(deckActions.updateDeck(selectedDeck.id, { sideboard: updated }));
+    }, [selectedDeck, decks, deckDispatch]);
+
+    const handleRemoveCardFromDeck = useCallback(async (card, section) => {
+        if (!selectedDeck) return;
+        const liveDeck = decks.find(d => d.id === selectedDeck.id) ?? selectedDeck;
+        const list = liveDeck[section] ?? [];
+        // Remove only the first occurrence (by id, fallback by name)
+        const idx = list.findIndex(c => (card.id != null ? c.id === card.id : c.name === card.name));
+        if (idx === -1) return;
+        const updated = [...list.slice(0, idx), ...list.slice(idx + 1)];
+        await updateDeckInDb(selectedDeck.id, { [section]: updated });
+        deckDispatch(deckActions.updateDeck(selectedDeck.id, { [section]: updated }));
+    }, [selectedDeck, decks, deckDispatch]);
+
+    const handleDeckCardSelect = useCallback((card) => {
+        setSelectedCard(card);
+    }, []);
+
+    // Shared control panel props
+    const controlPanelProps = {
+        onFilterChange: handleFilterChange,
+        onSortChange: handleSortChange,
+        onExport: handleExport,
+        onImport: handleImport,
+        mode,
+        onModeChange: setMode,
+    };
+
     return (
         <div className="w-screen h-screen bg-gray-100 p-10 flex flex-col">
-            {/* Control Panel */}
-            <ControlPanel
-                onFilterChange={handleFilterChange}
-                onSortChange={handleSortChange}
-                onExport={handleExport}
-                onImport={handleImport}
-            />
+            {/* Control Panel — shared by both modes, always at same position */}
+            <ControlPanel {...controlPanelProps} />
 
-            <div className="grid grid-cols-[2fr_1fr_2fr] gap-5 flex-1 min-h-0">
-                {/* Left Column */}
-                <div className="flex flex-col gap-5 min-h-0">
-                    {/* Counter and Diagram Section */}
-                    <div className="flex-1 border-[3px] border-orange-400 rounded-3xl bg-white flex items-center justify-center p-5 pb-0">
-                        <BarGraph data={filteredCards} />
+            {mode === 'card' ? (
+                <div className="grid grid-cols-[2fr_1fr_2fr] gap-5 flex-1 min-h-0">
+                    {/* Left Column */}
+                    <div className="flex flex-col gap-5 min-h-0">
+                        <>
+                            {/* Counter and Diagram Section */}
+                            <div className="flex-1 border-[3px] border-orange-400 rounded-3xl bg-white flex items-center justify-center p-5 pb-0">
+                                <BarGraph data={filteredCards} />
+                            </div>
+
+                            {/* Controller Section */}
+                            <div className="flex-1 border-[3px] border-red-300 rounded-3xl bg-white flex items-center justify-center p-5">
+                                <CardController />
+                            </div>
+                        </>
                     </div>
 
-                    {/* Controller Section */}
-                    <div className="flex-1 border-[3px] border-red-300 rounded-3xl bg-white flex items-center justify-center p-5">
-                        <CardController />
-                    </div>
-                </div>
-
-                {/* Current Card List Section */}
-                <div className="border-[3px] border-gray-300 rounded-3xl bg-white flex flex-col p-2 min-h-0">
-                    <CardList
-                        filteredCards={filteredCards}
-                        sortBy={sortBy}
-                        sortOrder={sortOrder}
-                        onSelect={setSelectedCard}
-                        selectedId={selectedCard?.id}
-                    />
-                </div>
-
-                {/* Card Section */}
-                <div className="border-[3px] border-blue-400 rounded-3xl bg-white flex items-center justify-center p-5">
-                    {selectedCard ? (
-                        <CardShow
-                            {...selectedCard}
-                            onUpdate={handleCardUpdate}
-                            onDelete={handleCardDelete}
+                    {/* Mid Column - Current Card List Section*/}
+                    <div className="border-[3px] border-gray-300 rounded-3xl bg-white flex flex-col p-2 min-h-0">
+                        <CardList
+                            filteredCards={filteredCards}
+                            sortBy={sortBy}
+                            sortOrder={sortOrder}
+                            onSelect={setSelectedCard}
+                            selectedId={selectedCard?.id}
                         />
-                    ) : (
-                        <p className="font-mono text-lg text-blue-400">Select a card from list</p>
-                    )}
+
+                    </div>
+
+                    {/* Right Column - Card Section */}
+                    <div className="border-[3px] border-blue-400 rounded-3xl bg-white flex items-center justify-center p-5">
+                        {selectedCard ? (
+                            <CardShow
+                                {...selectedCard}
+                                onUpdate={handleCardUpdate}
+                                onDelete={handleCardDelete}
+                            />
+                        ) : (
+                            <p className="font-mono text-lg text-blue-400">Select a card from list</p>
+                        )}
+                    </div>
                 </div>
-            </div>
-        </div >
+            ) : (
+                /* Deck Maker layout */
+                <div className="grid grid-cols-[5fr_2fr_3fr] gap-5 flex-1 min-h-0">
+                    {/* Left Column — Card List (4-col thumbnail grid) */}
+                    <div className="border-[3px] border-purple-400 rounded-3xl bg-white flex flex-col p-2 min-h-0">
+                        <DeckMakerCardGrid
+                            filteredCards={filteredCards}
+                            sortBy={sortBy}
+                            sortOrder={sortOrder}
+                            onSelect={setSelectedCard}
+                            selectedId={selectedCard?.id}
+                            onAddCard={deckView === 'edit' ? handleAddCardToDeck : null}
+                            onAddToSideboard={deckView === 'edit' ? handleAddToSideboard : null}
+                        />
+                    </div>
+
+                    {/* Mid Column — Deck List or Current Deck */}
+                    <div className="relative border-[3px] border-gray-300 rounded-3xl bg-white flex flex-col p-2 min-h-0">
+                        {deckView === 'list' ? (
+                            <DeckListPanel onSelectDeck={handleDeckSelect} />
+                        ) : (
+                            <CurrentDeckPanel
+                                deck={selectedDeck}
+                                onBack={handleDeckBack}
+                                onDelete={handleDeckDelete}
+                                onSelectCard={handleDeckCardSelect}
+                                onRemoveCard={handleRemoveCardFromDeck}
+                            />
+                        )}
+                    </div>
+
+                    {/* Right Column — Card preview (top) + Counter and Diagram (bottom) */}
+                    <div className="grid grid-rows-3 gap-5 min-h-0">
+                        {/* Card preview */}
+                        <div className="row-span-2 border-[3px] border-blue-400 rounded-3xl bg-white flex items-center justify-center p-5">
+                            {selectedCard ? (
+                                <CardShow
+                                    {...selectedCard}
+                                    onUpdate={handleCardUpdate}
+                                    onDelete={handleCardDelete}
+                                />
+                            ) : (
+                                <p className="font-mono text-lg text-blue-400">Card</p>
+                            )}
+                        </div>
+
+                        {/* Counter and Diagram */}
+                        <div className="border-[3px] border-orange-400 rounded-3xl bg-white flex items-center justify-center p-5 pb-0">
+                            <BarGraph data={filteredCards} maxBarPx={150} />
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 };
 
+
+
 const CardManager = () => (
-    <CardProvider>
-        <CardManagerContent />
-    </CardProvider>
+    <DeckProvider>
+        <CardProvider>
+            <CardManagerContent />
+        </CardProvider>
+    </DeckProvider>
 );
 
 export default CardManager;

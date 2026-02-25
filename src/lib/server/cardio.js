@@ -13,7 +13,7 @@ let dbInstance;
  * Lazily instantiate the Dexie database so we don't touch IndexedDB
  * during server-side rendering or build time.
  */
-const getDb = () => {
+export const getDb = () => {
     if (!dbInstance) {
         if (typeof window === 'undefined') {
             throw new Error('cardio (Dexie) can only run in a browser context');
@@ -32,6 +32,11 @@ const getDb = () => {
                     card.affiliation = [];
                 }
             });
+        });
+        dbInstance.version(3).stores({
+            // add decks table; list fields (cards/leaders/sideboard) stored as blobs, not indexed
+            [CARD_STORE]: '++id,type,name,cost,affiliation',
+            decks: '++id,name'
         });
     }
 

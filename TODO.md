@@ -1,7 +1,7 @@
 leader cards should not count towards any cost (done!)
 
 
-format contents in card area to be like an actual card
+format contents in card area to be like an actual card (done!)
 - add edit and delete functionailities to the card area
     - enable editing by double clicking on the respective text area
         - edit should be reflected in both Context and indexdb
@@ -22,3 +22,4 @@ Modify the control panel area to contain UI for the following features: (done!)
 - card deletion (use trash can icon, click it to enter deletion mode, delete the next clicked card in the list after user confirmation)
 - import/export indexdb cards data (use two buttons)
 
+Make Deck Maker page, which can be switched to by a tab switch. (WIP)
